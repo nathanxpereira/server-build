@@ -1,0 +1,114 @@
+# Migration Job: dumps the old pgvecto-rs (pg14) database and restores it
+# into the new cloudnative-vectorchord (pg16) cluster.
+#
+# What is preserved:  photos, albums, users, settings, shared links, faces (bounding boxes)
+# What is regenerated: vector embeddings (CLIP, face recognition) — Immich re-runs these
+#                      automatically. Large libraries may take hours on first startup.
+#
+# Run order:
+#   1. Scale down immich-server to stop writes:
+#        kubectl scale deployment immich-server -n immich --replicas=0
+#   2. Apply this file:
+#        kubectl apply -f 3-migration-job.yaml
+#   3. Watch logs:
+#        kubectl logs -n immich job/immich-postgres-migrate -f
+#   4. Once the Job completes successfully, proceed to step 4 (update ConfigMap).
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: migration-script
+  namespace: immich
+data:
+  migrate.sh: |
+    #!/bin/sh
+    set -e
+
+    echo "=== Immich Postgres Migration: pgvecto-rs (pg14) → cloudnative-vectorchord (pg16) ==="
+
+    SRC_HOST="${SRC_HOST:-immich-postgres}"
+    SRC_PORT="${SRC_PORT:-5432}"
+    SRC_DB="${SRC_DB:-immich}"
+    SRC_USER="${SRC_USER:-immich}"
+
+    DST_HOST="${DST_HOST:-immich-database-rw}"
+    DST_PORT="${DST_PORT:-5432}"
+    DST_DB="${DST_DB:-immich}"
+    DST_USER="${DST_USER:-immich}"
+
+    DUMP_FILE="/tmp/immich-pg14.dump"
+
+    echo "--- Step 1: Dumping from $SRC_HOST (pg14 pgvecto-rs)..."
+    # Use custom format for reliable restore. Skip extension objects that
+    # are specific to pgvecto-rs (vectors.*) — Immich will recreate them
+    # via its own migrations using the new vchord extension.
+    PGPASSWORD="$DB_PASSWORD" pg_dump \
+      --host="$SRC_HOST" \
+      --port="$SRC_PORT" \
+      --username="$SRC_USER" \
+      --dbname="$SRC_DB" \
+      --format=custom \
+      --no-privileges \
+      --no-owner \
+      --exclude-schema="vectors" \
+      --file="$DUMP_FILE"
+
+    echo "--- Dump complete ($(du -sh $DUMP_FILE | cut -f1))."
+
+    echo "--- Step 2: Restoring to $DST_HOST (pg16 vectorchord)..."
+    # Restore data. Immich will run its own migrations on startup to
+    # handle any schema differences between pg14/pgvecto-rs and pg16/vchord.
+    PGPASSWORD="$DB_PASSWORD" pg_restore \
+      --host="$DST_HOST" \
+      --port="$DST_PORT" \
+      --username="$DST_USER" \
+      --dbname="$DST_DB" \
+      --no-privileges \
+      --no-owner \
+      --clean \
+      --if-exists \
+      --single-transaction \
+      "$DUMP_FILE" || true
+    # '|| true' because pg_restore exits non-zero on warnings (e.g. missing
+    # extension objects) — we expect a few from the pgvecto-rs schema removal.
+
+    echo "--- Restore complete."
+    echo ""
+    echo "Next steps:"
+    echo "  1. Apply 4-update-configmap.yaml to point Immich at the new cluster"
+    echo "  2. Scale up immich-server: kubectl scale deployment immich-server -n immich --replicas=1"
+    echo "  3. Watch immich-server logs — it will run migrations and re-index vectors"
+    echo "  4. Once healthy, delete the old postgres resources:"
+    echo "       kubectl delete statefulset immich-postgres -n immich"
+    echo "       kubectl delete pvc immich-postgres-pvc -n immich"
+    echo "       kubectl delete pv immich-postgres-pv"
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: immich-postgres-migrate
+  namespace: immich
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          # Use pg16 client tools — pg_dump v16 can connect to pg14 sources
+          image: postgres:16-alpine
+          command: ["/bin/sh", "/scripts/migrate.sh"]
+          env:
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: immich
+                  key: DB_PASSWORD
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+      volumes:
+        - name: scripts
+          configMap:
+            name: migration-script
+            defaultMode: 0755

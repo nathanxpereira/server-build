@@ -1,0 +1,109 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: adguardhome
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: adguardhome-work-pv
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  hostPath:
+    path: /tank/appdata/adguardhome/work
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: adguardhome-work-pvc
+  namespace: adguardhome
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  volumeName: adguardhome-work-pv
+  storageClassName: ""
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: adguardhome-conf-pv
+spec:
+  capacity:
+    storage: 100Mi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  hostPath:
+    path: /tank/appdata/adguardhome/conf
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: adguardhome-conf-pvc
+  namespace: adguardhome
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Mi
+  volumeName: adguardhome-conf-pv
+  storageClassName: ""
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: adguardhome
+  namespace: adguardhome
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: adguardhome
+  template:
+    metadata:
+      labels:
+        app: adguardhome
+    spec:
+      # hostNetwork binds directly to the host's network stack, same as the
+      # Docker network_mode: host config. This is required for DNS on port 53.
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: adguardhome
+          image: adguard/adguardhome:latest
+          # Ports are informational only when using hostNetwork
+          ports:
+            - containerPort: 53
+              protocol: TCP
+            - containerPort: 53
+              protocol: UDP
+            - containerPort: 3000
+              protocol: TCP
+            - containerPort: 80
+              protocol: TCP
+          volumeMounts:
+            - name: work
+              mountPath: /opt/adguardhome/work
+            - name: conf
+              mountPath: /opt/adguardhome/conf
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+      volumes:
+        - name: work
+          persistentVolumeClaim:
+            claimName: adguardhome-work-pvc
+        - name: conf
+          persistentVolumeClaim:
+            claimName: adguardhome-conf-pvc

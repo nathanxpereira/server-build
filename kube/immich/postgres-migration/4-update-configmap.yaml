@@ -1,0 +1,19 @@
+# Patch the immich ConfigMap to point DB_HOSTNAME at the new CNPG cluster.
+# cloudnative-pg creates a Service named <cluster-name>-rw for the write endpoint.
+#
+# Apply AFTER the migration Job completes successfully:
+#   kubectl apply -f 4-update-configmap.yaml
+#
+# Then scale up immich-server:
+#   kubectl scale deployment immich-server -n immich --replicas=1
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: immich-env
+  namespace: immich
+data:
+  DB_HOSTNAME: immich-database-rw   # cloudnative-pg write-endpoint service
+  DB_PORT: "5432"
+  REDIS_HOSTNAME: immich-redis
+  IMMICH_MACHINE_LEARNING_URL: http://immich-machine-learning:3003

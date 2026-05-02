@@ -1,0 +1,1 @@
+Help me create a kubernetes cluster. I have containers stored at /tank/appdata/. I want to create a kubernetes cluster (maybe k3s)

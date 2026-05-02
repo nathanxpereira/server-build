@@ -42,7 +42,7 @@ sudo lspci -v | grep -i sas
 
 ```bash
 # Install ZFS repository
-sudo dnf install -y https://zfsonlinux.org/fedora/zfs-release-2-3$(rpm --eval "%{dist}").noarch.rpm
+sudo dnf install -y https://zfsonlinux.org/fedora/zfs-release-2-8$(rpm --eval "%{dist}").noarch.rpm
 
 # Install ZFS kernel module and utilities
 sudo dnf install -y zfs

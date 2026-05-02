@@ -1,0 +1,69 @@
+# cloudnative-pg Cluster using cloudnative-vectorchord (pg16).
+# This replaces the pgvecto-rs StatefulSet in immich.yaml.
+#
+# BEFORE applying: fill in the password in immich-cnpg-credentials (same
+# value as DB_PASSWORD in /tank/appdata/immich/.env).
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: immich-cnpg-credentials
+  namespace: immich
+type: kubernetes.io/basic-auth
+stringData:
+  # Must match the DB_PASSWORD value in /tank/appdata/immich/.env
+  username: immich
+  password: "REPLACE_WITH_DB_PASSWORD"
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: immich-database
+  namespace: immich
+spec:
+  instances: 1
+
+  imageName: ghcr.io/tensorchord/cloudnative-vectorchord:16.9-0.4.3
+
+  # Store database files on the ZFS pool for portability
+  storage:
+    size: 50Gi
+    pvcTemplate:
+      accessModes:
+        - ReadWriteOnce
+      storageClassName: ""
+      volumeName: immich-cnpg-pv
+
+  # Point to the new (empty) directory on /tank — separate from old postgres data
+  # The migration Job will populate it via pg_restore
+  postgresql:
+    shared_preload_libraries:
+      - "vchord.so"
+
+  bootstrap:
+    initdb:
+      database: immich
+      owner: immich
+      secret:
+        name: immich-cnpg-credentials
+      postInitApplicationSQL:
+        - CREATE EXTENSION IF NOT EXISTS vchord CASCADE;
+        - CREATE EXTENSION IF NOT EXISTS earthdistance CASCADE;
+
+  # Credentials used by CNPG to manage the cluster
+  superuserSecret:
+    name: immich-cnpg-credentials
+---
+# PV backing the CNPG cluster — separate path from old pgvecto-rs data
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: immich-cnpg-pv
+spec:
+  capacity:
+    storage: 50Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  hostPath:
+    path: /tank/appdata/immich/postgres-cnpg

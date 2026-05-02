@@ -1,0 +1,375 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: immich
+---
+# ── ConfigMap ────────────────────────────────────────────────────────────────
+# Non-secret environment shared by all Immich pods.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: immich-env
+  namespace: immich
+data:
+  DB_HOSTNAME: immich-postgres
+  DB_PORT: "5432"
+  REDIS_HOSTNAME: immich-redis
+  IMMICH_MACHINE_LEARNING_URL: http://immich-machine-learning:3003
+---
+# ── Postgres (pgvecto-rs pg14) ────────────────────────────────────────────────
+# This is the INITIAL deployment that matches your existing Docker data.
+# After migrating with postgres-migration/, delete this StatefulSet + PV + PVC
+# and replace DB_HOSTNAME in the ConfigMap with "immich-database-rw" (CNPG).
+#
+# Migration steps: kube/immich/postgres-migration/
+# IMPORTANT: Confirm DB_DATA_LOCATION from /tank/appdata/immich/.env and update
+# the hostPath below before first apply.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: immich-postgres-pv
+spec:
+  capacity:
+    storage: 50Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  hostPath:
+    # Update this to match DB_DATA_LOCATION from /tank/appdata/immich/.env
+    path: /tank/appdata/immich/postgres
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: immich-postgres-pvc
+  namespace: immich
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi
+  volumeName: immich-postgres-pv
+  storageClassName: ""
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: immich-postgres
+  namespace: immich
+spec:
+  serviceName: immich-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: immich-postgres
+  template:
+    metadata:
+      labels:
+        app: immich-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: docker.io/tensorchord/pgvecto-rs:pg14-v0.2.0@sha256:739cdd626151ff1f796dc95a6591b55a714f341c737e27f045019ceabf8e8c52
+          args:
+            - postgres
+            - -c
+            - shared_preload_libraries=vectors.so
+            - -c
+            - search_path="$user", public, vectors
+            - -c
+            - logging_collector=on
+            - -c
+            - max_wal_size=2GB
+            - -c
+            - shared_buffers=512MB
+            - -c
+            - wal_compression=on
+          env:
+            - name: POSTGRES_INITDB_ARGS
+              value: --data-checksums
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: immich
+                  key: DB_DATABASE_NAME
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: immich
+                  key: DB_USERNAME
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: immich
+                  key: DB_PASSWORD
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          livenessProbe:
+            exec:
+              # Shell wrapper required: k8s does not expand $(VAR) in exec probe commands
+              command:
+                - /bin/sh
+                - -c
+                - pg_isready -U $POSTGRES_USER
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: immich-postgres-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: immich-postgres
+  namespace: immich
+spec:
+  selector:
+    app: immich-postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+# ── Redis (valkey) ────────────────────────────────────────────────────────────
+# Redis is cache-only — no persistent volume needed.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: immich-redis
+  namespace: immich
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: immich-redis
+  template:
+    metadata:
+      labels:
+        app: immich-redis
+    spec:
+      containers:
+        - name: valkey
+          image: docker.io/valkey/valkey:8-bookworm@sha256:42cba146593a5ea9a622002c1b7cba5da7be248650cbb64ecb9c6c33d29794b1
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: immich-redis
+  namespace: immich
+spec:
+  selector:
+    app: immich-redis
+  ports:
+    - port: 6379
+      targetPort: 6379
+---
+# ── Immich Server ─────────────────────────────────────────────────────────────
+# IMPORTANT: Before applying, confirm UPLOAD_LOCATION from .env and update
+# the hostPath below.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: immich-uploads-pv
+spec:
+  capacity:
+    storage: 500Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  hostPath:
+    path: /tank/photos/immich
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: immich-uploads-pvc
+  namespace: immich
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 500Gi
+  volumeName: immich-uploads-pv
+  storageClassName: ""
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: immich-server
+  namespace: immich
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: immich-server
+  template:
+    metadata:
+      labels:
+        app: immich-server
+    spec:
+      containers:
+        - name: immich-server
+          image: ghcr.io/immich-app/immich-server:release
+          ports:
+            - containerPort: 2283
+          envFrom:
+            - configMapRef:
+                name: immich-env
+          env:
+            - name: EXTERNAL_URL
+              value: "http://immich.nphls.com"
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: immich
+                  key: DB_PASSWORD
+            - name: DB_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: immich
+                  key: DB_USERNAME
+            - name: DB_DATABASE_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: immich
+                  key: DB_DATABASE_NAME
+          volumeMounts:
+            - name: uploads
+              mountPath: /usr/src/app/upload
+            - name: localtime
+              mountPath: /etc/localtime
+              readOnly: true
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+      volumes:
+        - name: uploads
+          persistentVolumeClaim:
+            claimName: immich-uploads-pvc
+        - name: localtime
+          hostPath:
+            path: /etc/localtime
+            type: File
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: immich-server
+  namespace: immich
+spec:
+  type: NodePort
+  selector:
+    app: immich-server
+  ports:
+    - port: 2283
+      targetPort: 2283
+      nodePort: 32283
+---
+# ── Machine Learning Service ──────────────────────────────────────────────────
+# The immich-server calls the ML container at IMMICH_MACHINE_LEARNING_URL (port 3003).
+apiVersion: v1
+kind: Service
+metadata:
+  name: immich-machine-learning
+  namespace: immich
+spec:
+  selector:
+    app: immich-machine-learning
+  ports:
+    - port: 3003
+      targetPort: 3003
+---
+# ── Machine Learning Deployment ───────────────────────────────────────────────
+# Run: docker run --rm -v immich_model-cache:/src -v /tank/appdata/immich/ml-cache:/dst alpine cp -a /src/. /dst/
+# BEFORE applying this, to move the model cache off Docker volumes onto /tank.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: immich-ml-cache-pv
+spec:
+  capacity:
+    storage: 20Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  hostPath:
+    path: /tank/appdata/immich/ml-cache
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: immich-ml-cache-pvc
+  namespace: immich
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  volumeName: immich-ml-cache-pv
+  storageClassName: ""
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: immich-machine-learning
+  namespace: immich
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: immich-machine-learning
+  template:
+    metadata:
+      labels:
+        app: immich-machine-learning
+    spec:
+      containers:
+        - name: immich-machine-learning
+          image: ghcr.io/immich-app/immich-machine-learning:release
+          ports:
+            - containerPort: 3003
+          # ML is a pure HTTP service — no DB or Redis access needed
+          env:
+            - name: TRANSFORMERS_CACHE
+              value: /cache
+            - name: HF_XET_CACHE
+              value: /cache/huggingface-xet
+            - name: MPLCONFIGDIR
+              value: /cache/matplotlib-config
+          volumeMounts:
+            - name: ml-cache
+              mountPath: /cache
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              memory: 4Gi
+      volumes:
+        - name: ml-cache
+          persistentVolumeClaim:
+            claimName: immich-ml-cache-pvc

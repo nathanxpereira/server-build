@@ -1,0 +1,6 @@
+# Never commit filled-in secrets
+kube/**/secret.yaml
+kube/**/.env
+.env
+*.env
+scripts/secrets.env.template
