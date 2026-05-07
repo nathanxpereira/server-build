@@ -35,7 +35,6 @@ spec:
     - ReadWriteOnce
   persistentVolumeReclaimPolicy: Retain
   hostPath:
-    # Update this to match DB_DATA_LOCATION from /tank/appdata/immich/.env
     path: /tank/appdata/immich/postgres
 ---
 apiVersion: v1

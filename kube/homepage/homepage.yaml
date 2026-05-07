@@ -88,7 +88,7 @@ spec:
             - containerPort: 3000
           env:
             - name: HOMEPAGE_ALLOWED_HOSTS
-              value: "homepage.nphls.com,localhost"
+              value: "homepage.nphls.com,localhost,server-0,server-0:30300"
           volumeMounts:
             - name: config
               mountPath: /app/config
