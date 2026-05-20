@@ -1,0 +1,14 @@
+services:
+  jellyfin:
+    image: jellyfin/jellyfin:latest
+    user: "1000:1000"
+    ports:
+      - '8096:8096'
+      - '7359:7359/udp'
+    environment:
+      - JELLYFIN_PublishedServerUrl=${JELLYFIN_PublishedServerUrl}
+    volumes:
+      - ${JELLYFIN_DIR}/config:/config
+      - ${JELLYFIN_MOVIES_DIR}:/movies:ro
+      - ${JELLYFIN_TV_DIR}:/tv:ro
+    restart: unless-stopped
